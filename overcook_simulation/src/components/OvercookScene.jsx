@@ -99,11 +99,12 @@ export default function OvercookScene({ staticInfo, frame }) {
       if (!prevHeld && curHeld) {
         const name = curHeld.name;
         if (name === "onion" || name === "soup") {
-          const ori = player.orientation || prevPlayer.orientation || "south";
+          // 내려놓을 때와 동일하게 "이전 프레임 기준"으로 앞칸 계산
+          const ori = prevPlayer.orientation || player.orientation || "south";
           const { dx, dy } = dirOffset[ori] || { dx: 0, dy: 0 };
 
-          const tx = player.position.x + dx;
-          const ty = player.position.y + dy;
+          const tx = prevPlayer.position.x + dx;
+          const ty = prevPlayer.position.y + dy;
 
           const idxFake = currentFake.findIndex(
             (fo) =>
@@ -293,9 +294,7 @@ export default function OvercookScene({ staticInfo, frame }) {
       if (isFakeSoup) {
         sprite = "/assets/tiles/tile_soup.png";
       } else {
-        const count =
-          obj.numIngredients ?? obj.ingredients?.length ?? 0;
-
+        const count = obj.numIngredients ?? obj.ingredients?.length ?? 0;
         const onionCount = Math.max(0, Math.min(3, count));
 
         if (obj.isReady) {
@@ -317,7 +316,6 @@ export default function OvercookScene({ staticInfo, frame }) {
 
     const cooking = obj.name === "soup" && obj.isCooking && !obj.isReady;
     const ready = obj.isReady;
-
     const barY = y * gridSize + 20;
 
     return (
