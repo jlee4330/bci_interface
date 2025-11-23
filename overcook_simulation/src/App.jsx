@@ -297,22 +297,23 @@ export default function App() {
   const frame = episode.frames[Math.min(frameIndex, totalFrames - 1)];
   const progress = Math.min((elapsed / totalTime) * 100, 100);
 
-  return (
-    <div
-      style={{
-        display: "flex",
-        justifyContent: "center",
-        gap: "40px",
-        padding: "30px",
-        background: "linear-gradient(160deg, #0d0d0d 0%, #1b1b1b 100%)",
-        color: "#f0f0f0",
-        height: "100vh",
-        width: "100vw",
-        boxSizing: "border-box",
-        overflow: "hidden",
-        fontFamily: "Inter, sans-serif",
-      }}
-    >
+ return (
+  <div
+    style={{
+      display: "flex",
+      justifyContent: "center",
+      gap: "40px",
+      padding: "30px",
+      background: "linear-gradient(160deg, #0d0d0d 0%, #1b1b1b 100%)",
+      color: "#f0f0f0",
+      height: "100vh",
+      width: "100vw",
+      boxSizing: "border-box",
+      overflowX: "hidden",   // 가로만 막고
+      overflowY: "auto",     // 세로 스크롤 허용
+      fontFamily: "Inter, sans-serif",
+    }}
+  >
       {/* Main viewer */}
       <div
         style={{
@@ -376,7 +377,7 @@ export default function App() {
         >
           <div
             style={{
-              transform: "scale(1.5)",      // 여기 숫자를 조절해서 크기 변경
+              transform: "scale(1.5)", // 여기 숫자를 조절해서 크기 변경
               transformOrigin: "top center",
             }}
           >
@@ -749,143 +750,163 @@ function ReplayWindow({
         color: "#eee",
       }}
     >
-      <h3 style={{ color: "#ffffff", marginBottom: "8px" }}>🎯 Replay Window</h3>
+      <h3 style={{ color: "#ffffff", marginBottom: "10px", fontSize: "1.1em" }}>
+        🎯 Replay Window
+      </h3>
       <p style={{ color: "#aaa", marginBottom: "6px", fontSize: "0.95em" }}>
         Focus on <strong>frame {baseFrame}</strong> ({baseTimeSec.toFixed(2)}s)
       </p>
-      <p style={{ color: "#aaa", marginBottom: "10px", fontSize: "0.9em" }}>
+      <p style={{ color: "#aaa", marginBottom: "14px", fontSize: "0.9em" }}>
         Start frame {startFrame} ({startTimeSec.toFixed(2)}s), End frame{" "}
         {endFrame} ({endTimeSec.toFixed(2)}s)
       </p>
 
-      <Range
-        values={[selectedInterval.startOffset, selectedInterval.endOffset]}
-        step={1}
-        min={MIN_OFFSET}
-        max={MAX_OFFSET}
-        onChange={(values) => {
-          handleOffsetEdit("startOffset", values[0]);
-          handleOffsetEdit("endOffset", values[1]);
-        }}
-        renderTrack={({ props, children }) => (
-          <div
-            {...props}
-            style={{
-              ...props.style,
-              height: "12px",
-              width: "100%",
-              borderRadius: "6px",
-              background: "#444",
-              position: "relative",
-            }}
-          >
-            <div
-              style={{
-                position: "absolute",
-                left: `${
-                  ((selectedInterval.startOffset - MIN_OFFSET) /
-                    (MAX_OFFSET - MIN_OFFSET)) *
-                  100
-                }%`,
-                width: `${
-                  ((selectedInterval.endOffset - selectedInterval.startOffset) /
-                    (MAX_OFFSET - MIN_OFFSET)) *
-                  100
-                }%`,
-                height: "100%",
-                background: "linear-gradient(90deg, #ffd54f, #ffd54f)",
-                borderRadius: "6px",
-              }}
-            />
-            {children}
-          </div>
-        )}
-        renderThumb={({ props }) => (
-          <div
-            {...props}
-            style={{
-              ...props.style,
-              height: "18px",
-              width: "18px",
-              borderRadius: "50%",
-              background: "#ffffff",
-            }}
-          />
-        )}
-      />
-
-      {/* 오프셋 숫자 입력 */}
       <div
         style={{
-          display: "flex",
-          justifyContent: "space-between",
-          marginTop: "10px",
-          fontSize: "0.85em",
-          color: "#ccc",
+          padding: "12px 14px",
+          borderRadius: "10px",
+          background: "#151515",
+          border: "1px solid #333",
         }}
       >
-        <div>
-          <div>Start offset frames</div>
-          <input
-            type="number"
-            value={selectedInterval.startOffset}
-            onChange={(e) => handleOffsetEdit("startOffset", e.target.value)}
-            style={{
-              width: "80px",
-              padding: "4px 6px",
-              marginTop: "4px",
-              background: "#222",
-              border: "1px solid #555",
-              borderRadius: "4px",
-              color: "#eee",
-            }}
-          />
-        </div>
-        <div>
-          <div>End offset frames</div>
-          <input
-            type="number"
-            value={selectedInterval.endOffset}
-            onChange={(e) => handleOffsetEdit("endOffset", e.target.value)}
-            style={{
-              width: "80px",
-              padding: "4px 6px",
-              marginTop: "4px",
-              background: "#222",
-              border: "1px solid #555",
-              borderRadius: "4px",
-              color: "#eee",
-            }}
-          />
+        <Range
+          values={[selectedInterval.startOffset, selectedInterval.endOffset]}
+          step={1}
+          min={MIN_OFFSET}
+          max={MAX_OFFSET}
+          onChange={(values) => {
+            handleOffsetEdit("startOffset", values[0]);
+            handleOffsetEdit("endOffset", values[1]);
+          }}
+          renderTrack={({ props, children }) => (
+            <div
+              {...props}
+              style={{
+                ...props.style,
+                height: "16px",
+                width: "100%",
+                borderRadius: "8px",
+                background: "#444",
+                position: "relative",
+              }}
+            >
+              <div
+                style={{
+                  position: "absolute",
+                  left: `${
+                    ((selectedInterval.startOffset - MIN_OFFSET) /
+                      (MAX_OFFSET - MIN_OFFSET)) *
+                    100
+                  }%`,
+                  width: `${
+                    ((selectedInterval.endOffset -
+                      selectedInterval.startOffset) /
+                      (MAX_OFFSET - MIN_OFFSET)) *
+                    100
+                  }%`,
+                  height: "100%",
+                  background: "linear-gradient(90deg, #ffd54f, #ffd54f)",
+                  borderRadius: "8px",
+                }}
+              />
+              {children}
+            </div>
+          )}
+          renderThumb={({ props }) => (
+            <div
+              {...props}
+              style={{
+                ...props.style,
+                height: "22px",
+                width: "22px",
+                borderRadius: "50%",
+                background: "#ffffff",
+                boxShadow: "0 0 4px rgba(0,0,0,0.5)",
+              }}
+            />
+          )}
+        />
+
+        {/* 오프셋 숫자 입력 */}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            marginTop: "12px",
+            fontSize: "0.9em",
+            color: "#ccc",
+            gap: "16px",
+          }}
+        >
+          <div style={{ flex: 1 }}>
+            <div>Start offset frames</div>
+            <input
+              type="number"
+              value={selectedInterval.startOffset}
+              onChange={(e) => handleOffsetEdit("startOffset", e.target.value)}
+              style={{
+                width: "100%",
+                maxWidth: "130px",
+                padding: "6px 8px",
+                marginTop: "6px",
+                background: "#222",
+                border: "1px solid #555",
+                borderRadius: "6px",
+                color: "#eee",
+                fontSize: "0.95em",
+              }}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div>End offset frames</div>
+            <input
+              type="number"
+              value={selectedInterval.endOffset}
+              onChange={(e) => handleOffsetEdit("endOffset", e.target.value)}
+              style={{
+                width: "100%",
+                maxWidth: "130px",
+                padding: "6px 8px",
+                marginTop: "6px",
+                background: "#222",
+                border: "1px solid #555",
+                borderRadius: "6px",
+                color: "#eee",
+                fontSize: "0.95em",
+              }}
+            />
+          </div>
         </div>
       </div>
 
       {/* 캘리브레이션 이유 메모 */}
       <div
         style={{
-          marginTop: "16px",
+          marginTop: "18px",
           textAlign: "left",
-          fontSize: "0.9em",
+          fontSize: "0.95em",
         }}
       >
-        <div style={{ marginBottom: "4px", color: "#ccc" }}>
+        <div style={{ marginBottom: "6px", color: "#ccc" }}>
           Calibration note
         </div>
         <textarea
           value={selectedInterval.reason || ""}
           onChange={(e) => handleReasonChange(e.target.value)}
           placeholder="이 구간으로 다시 잡은 이유를 메모해 주세요."
-          rows={3}
+          rows={4}
           style={{
             width: "100%",
             resize: "vertical",
-            padding: "8px 10px",
+            minHeight: "390px",
+            padding: "10px 12px",
             background: "#181818",
             border: "1px solid #555",
-            borderRadius: "6px",
+            borderRadius: "8px",
             color: "#eee",
             fontFamily: "inherit",
-            fontSize: "0.9em",
+            fontSize: "0.95em",
+            lineHeight: 1.5,
           }}
         />
       </div>
@@ -901,7 +922,7 @@ function ReplayWindow({
         <button
           onClick={() => handleReplayFromBase(selectedInterval)}
           style={{
-            padding: "10px 20px",
+            padding: "10px 22px",
             background: "linear-gradient(90deg, #292828ff)",
             border: "none",
             borderRadius: "8px",
@@ -915,7 +936,7 @@ function ReplayWindow({
         <button
           onClick={() => deleteInterval(selectedInterval.index)}
           style={{
-            padding: "10px 20px",
+            padding: "10px 22px",
             background: "linear-gradient(90deg, #292828ff)",
             border: "none",
             borderRadius: "8px",
