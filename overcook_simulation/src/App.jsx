@@ -325,7 +325,7 @@ export default function App() {
           alignItems: "center",
         }}
       >
-        <h1
+        <h2
           style={{
             color: "#ffffff",
             fontWeight: 600,
@@ -335,7 +335,7 @@ export default function App() {
         >
           Round {roundIndex + 1} / {TOTAL_ROUNDS} ·{" "}
           {ROUNDS[currentLayoutIdx].label}
-        </h1>
+        </h2>
 
         <div
           style={{
@@ -377,7 +377,7 @@ export default function App() {
         >
           <div
             style={{
-              transform: "scale(1.5)", // 여기 숫자를 조절해서 크기 변경
+              transform: "scale(1.2)", // 여기 숫자를 조절해서 크기 변경
               transformOrigin: "top center",
             }}
           >
@@ -557,7 +557,7 @@ export default function App() {
       {/* Right Panel */}
       <div
         style={{
-          width: "880px",
+          width: "600px",
           flexShrink: 0,
           borderLeft: "2px solid #222",
           paddingLeft: "20px",
