@@ -1,0 +1,931 @@
+// src/App.jsx
+import React, { useState, useEffect, useRef } from "react";
+import OvercookScene from "./components/OvercookScene";
+import { ROUNDS } from "./data/overcook_episodes";
+import { Range } from "react-range";
+
+const MIN_OFFSET = -5;
+const MAX_OFFSET = 5;
+const FRAME_DURATION = 0.3;
+
+// 0: random0_medium, 1: random1, 2: random3, 3: small_corridor
+const LAYOUT_ORDER = [0, 1, 2, 3, 0, 1, 2, 3];
+const TOTAL_ROUNDS = 8;
+
+// 초기 라운드용 trajectory 선택
+function createInitialRoundState() {
+  const layoutIdx = LAYOUT_ORDER[0];
+  const eps = ROUNDS[layoutIdx].episodes;
+  const ep = eps[Math.floor(Math.random() * eps.length)];
+  const used = ROUNDS.map(() => []);
+  used[layoutIdx] = [ep.fileName];
+  return { initialEpisode: ep, initialUsed: used };
+}
+
+// 라운드별 trajectory 선택 (같은 폴더에서는 아직 안 쓴 파일 우선)
+function pickEpisodeForRound(roundIndex, usedFilesByLayout) {
+  const layoutIdx = LAYOUT_ORDER[roundIndex];
+  const eps = ROUNDS[layoutIdx].episodes;
+  const used = usedFilesByLayout[layoutIdx] || [];
+
+  const candidates = eps.filter((ep) => !used.includes(ep.fileName));
+  const list = candidates.length > 0 ? candidates : eps;
+
+  const ep = list[Math.floor(Math.random() * list.length)];
+  return { episode: ep, layoutIdx };
+}
+
+function baseTimeLabel(frame) {
+  return `${(frame * FRAME_DURATION).toFixed(2)}s`;
+}
+
+const { initialEpisode, initialUsed } = createInitialRoundState();
+
+export default function App() {
+  const [roundIndex, setRoundIndex] = useState(0); // 0~7
+  const [episode, setEpisode] = useState(initialEpisode);
+  const [usedFilesByLayout, setUsedFilesByLayout] = useState(initialUsed);
+
+  const [frameIndex, setFrameIndex] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [rawMarkers, setRawMarkers] = useState([]); // [frameIndex, ...]
+  const [intervals, setIntervals] = useState([]); // [{ baseFrame, startOffset, endOffset, reason }, ...]
+  const [selectedInterval, setSelectedInterval] = useState(null);
+  const [locked, setLocked] = useState(true);
+
+  const startTimeRef = useRef(null);
+  const rafRef = useRef(null);
+  const replayRef = useRef(null);
+
+  const totalFrames = episode.frames.length;
+  const frameDuration = FRAME_DURATION;
+  const totalTime = totalFrames * frameDuration;
+  const currentLayoutIdx = LAYOUT_ORDER[roundIndex];
+
+  // 메인 재생 루프
+  useEffect(() => {
+    if (!isPlaying) {
+      cancelAnimationFrame(rafRef.current);
+      return;
+    }
+
+    startTimeRef.current = performance.now() - elapsed * 1000;
+
+    const update = () => {
+      const now = performance.now();
+      const newElapsed = (now - startTimeRef.current) / 1000;
+      setElapsed(newElapsed);
+
+      const newFrameIndex = Math.floor(newElapsed / frameDuration);
+
+      if (newFrameIndex < totalFrames) {
+        setFrameIndex(newFrameIndex);
+        rafRef.current = requestAnimationFrame(update);
+      } else {
+        setIsPlaying(false);
+        setLocked(false);
+      }
+    };
+
+    rafRef.current = requestAnimationFrame(update);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [isPlaying, frameDuration, totalFrames, elapsed]);
+
+  // Space key → 현재 프레임 index 저장
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.code === "Space") {
+        e.preventDefault();
+
+        const currentFrame = frameIndex;
+
+        setRawMarkers((prev) => [...prev, currentFrame]);
+        setIntervals((prev) => [
+          ...prev,
+          {
+            baseFrame: currentFrame,
+            startOffset: -2,
+            endOffset: 2,
+            reason: "",
+          },
+        ]);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [frameIndex]);
+
+  // 선택한 interval만 재생
+  const handleReplayFromBase = (intv) => {
+    if (!intv) return;
+
+    let startFrame = intv.baseFrame + intv.startOffset;
+    let endFrame = intv.baseFrame + intv.endOffset;
+
+    startFrame = Math.max(startFrame, 0);
+    endFrame = Math.min(endFrame, totalFrames - 1);
+
+    if (startFrame > endFrame) {
+      const tmp = startFrame;
+      startFrame = endFrame;
+      endFrame = tmp;
+    }
+
+    const startTime = startFrame * frameDuration;
+    const durationFrames = Math.max(1, endFrame - startFrame + 1);
+    const duration = durationFrames * frameDuration;
+
+    setIsPlaying(false);
+    cancelAnimationFrame(rafRef.current);
+
+    setElapsed(startTime);
+    setFrameIndex(startFrame);
+
+    clearTimeout(replayRef.current);
+    setIsPlaying(true);
+    replayRef.current = setTimeout(() => setIsPlaying(false), duration * 1000);
+  };
+
+  const togglePlay = () => {
+    if (isPlaying) return;
+    setLocked(true);
+    setIsPlaying(true);
+  };
+
+  // 같은 trajectory에서 완전 초기화
+  const reset = () => {
+    setIsPlaying(false);
+    cancelAnimationFrame(rafRef.current);
+    clearTimeout(replayRef.current);
+
+    setElapsed(0);
+    setFrameIndex(0);
+    setRawMarkers([]);
+    setIntervals([]);
+    setSelectedInterval(null);
+    setLocked(true);
+  };
+
+  // 다음 라운드
+  const handleNextRound = () => {
+    if (roundIndex >= TOTAL_ROUNDS - 1) return;
+
+    const nextRoundIndex = roundIndex + 1;
+    const { episode: nextEpisode, layoutIdx } = pickEpisodeForRound(
+      nextRoundIndex,
+      usedFilesByLayout
+    );
+
+    setIsPlaying(false);
+    cancelAnimationFrame(rafRef.current);
+    clearTimeout(replayRef.current);
+
+    setRoundIndex(nextRoundIndex);
+    setEpisode(nextEpisode);
+    setUsedFilesByLayout((prev) => {
+      const copy = prev.map((arr) => [...arr]);
+      if (!copy[layoutIdx].includes(nextEpisode.fileName)) {
+        copy[layoutIdx].push(nextEpisode.fileName);
+      }
+      return copy;
+    });
+
+    setElapsed(0);
+    setFrameIndex(0);
+    setRawMarkers([]);
+    setIntervals([]);
+    setSelectedInterval(null);
+    setLocked(true);
+  };
+
+  // 오프셋 편집
+  const handleOffsetEdit = (field, value) => {
+    if (!selectedInterval) return;
+
+    const intValue = parseInt(value, 10);
+    if (Number.isNaN(intValue)) return;
+
+    const updated = [...intervals];
+    updated[selectedInterval.index][field] = intValue;
+    setIntervals(updated);
+
+    setSelectedInterval((prev) => ({
+      ...prev,
+      [field]: intValue,
+    }));
+  };
+
+  // reason 편집
+  const handleReasonChange = (value) => {
+    if (!selectedInterval) return;
+
+    const updated = [...intervals];
+    updated[selectedInterval.index].reason = value;
+    setIntervals(updated);
+
+    setSelectedInterval((prev) => ({
+      ...prev,
+      reason: value,
+    }));
+  };
+
+  const deleteInterval = (index) => {
+    setIntervals((prev) => prev.filter((_, i) => i !== index));
+    setRawMarkers((prev) => prev.filter((_, i) => i !== index));
+    setSelectedInterval(null);
+  };
+
+  // JSON export helper
+  const exportJSON = (data, filename) => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // 최종 export
+  const handleExport = () => {
+    const realTimeData = rawMarkers.slice();
+
+    const calibratedData = intervals.map((intv) => {
+      const baseFrame = intv.baseFrame;
+      let startFrame = baseFrame + intv.startOffset;
+      let endFrame = baseFrame + intv.endOffset;
+
+      startFrame = Math.max(0, Math.min(startFrame, totalFrames - 1));
+      endFrame = Math.max(0, Math.min(endFrame, totalFrames - 1));
+
+      if (startFrame > endFrame) {
+        const tmp = startFrame;
+        startFrame = endFrame;
+        endFrame = tmp;
+      }
+
+      return [startFrame, endFrame];
+    });
+
+    const reasons = intervals.map((intv) => intv.reason || "");
+    const layoutIdx = LAYOUT_ORDER[roundIndex];
+
+    const payload = {
+      round: roundIndex + 1,
+      layout: ROUNDS[layoutIdx].label,
+      fileName: episode.fileName,
+      errorInfo: [
+        {
+          type: "real-time",
+          data: realTimeData,
+        },
+        {
+          type: "calibrated",
+          data: calibratedData,
+          reason: reasons,
+        },
+      ],
+    };
+
+    exportJSON(payload, "error_info.json");
+  };
+
+  const frame = episode.frames[Math.min(frameIndex, totalFrames - 1)];
+  const progress = Math.min((elapsed / totalTime) * 100, 100);
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "center",
+        gap: "40px",
+        padding: "30px",
+        background: "linear-gradient(160deg, #0d0d0d 0%, #1b1b1b 100%)",
+        color: "#f0f0f0",
+        height: "100vh",
+        width: "100vw",
+        boxSizing: "border-box",
+        overflow: "hidden",
+        fontFamily: "Inter, sans-serif",
+      }}
+    >
+      {/* Main viewer */}
+      <div
+        style={{
+          textAlign: "center",
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+        }}
+      >
+        <h1
+          style={{
+            color: "#ffffff",
+            fontWeight: 600,
+            marginBottom: "8px",
+            letterSpacing: "0.5px",
+          }}
+        >
+          Round {roundIndex + 1} / {TOTAL_ROUNDS} ·{" "}
+          {ROUNDS[currentLayoutIdx].label}
+        </h1>
+
+        <div
+          style={{
+            fontSize: "0.9em",
+            color: "#ccc",
+            marginBottom: "10px",
+          }}
+        >
+          Trajectory file: <code>{episode.fileName}</code>
+        </div>
+
+        <div
+          style={{
+            fontSize: "1.2em",
+            color: "#ffd54f",
+            marginBottom: "15px",
+            background: "#222",
+            padding: "6px 12px",
+            display: "inline-block",
+            borderRadius: "6px",
+          }}
+        >
+          ⏱ {elapsed.toFixed(2)}s / {totalTime.toFixed(2)}s{" "}
+          <span style={{ fontSize: "0.8em", marginLeft: "8px", color: "#aaa" }}>
+            (frame {frameIndex} / {totalFrames - 1})
+          </span>
+        </div>
+
+        {/* 에이전트 화면 크게 + scale */}
+        <div
+          style={{
+            width: "100%",
+            maxWidth: "1300px",
+            height: "60vh",
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "flex-start",
+          }}
+        >
+          <div
+            style={{
+              transform: "scale(1.5)",      // 여기 숫자를 조절해서 크기 변경
+              transformOrigin: "top center",
+            }}
+          >
+            <OvercookScene staticInfo={episode.staticInfo} frame={frame} />
+          </div>
+        </div>
+
+        {/* Raw timeline */}
+        <div
+          style={{
+            width: "50%",
+            margin: "18px auto 8px auto",
+            position: "relative",
+            background: "#181818",
+            borderRadius: "6px",
+            padding: "10px 10px",
+          }}
+        >
+          <p
+            style={{
+              margin: "0 0 6px 0",
+              textAlign: "left",
+              color: "#bbb",
+              fontWeight: 500,
+              fontSize: "0.9em",
+            }}
+          >
+            Raw Error Markers
+          </p>
+          <div
+            style={{
+              position: "relative",
+              height: "8px",
+              background: "#333",
+              borderRadius: "6px",
+            }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: `${progress}%`,
+                height: "8px",
+                background: "linear-gradient(90deg, #807b7bff, #ffffffff)",
+                borderRadius: "6px",
+              }}
+            />
+            {rawMarkers.map((markerFrame, i) => {
+              const pos =
+                totalFrames > 1
+                  ? (markerFrame / (totalFrames - 1)) * 100
+                  : 0;
+              return (
+                <div
+                  key={i}
+                  onClick={() => handleReplayFromBase(intervals[i])}
+                  title={`Replay around frame ${markerFrame} (${(
+                    markerFrame * frameDuration
+                  ).toFixed(2)}s)`}
+                  style={{
+                    position: "absolute",
+                    left: `${pos}%`,
+                    top: "-2px",
+                    width: "6px",
+                    height: "14px",
+                    background:
+                      selectedInterval?.index === i
+                        ? "#ffd54f"
+                        : "rgba(255,68,68,0.9)",
+                    borderRadius: "2px",
+                    transform: "translateX(-50%)",
+                    cursor: "pointer",
+                    boxShadow:
+                      selectedInterval?.index === i
+                        ? "0 0 8px rgba(255,213,79,0.8)"
+                        : "0 0 4px rgba(255,255,255,0.5)",
+                    transition: "all 0.15s ease",
+                  }}
+                />
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Controls */}
+        <div
+          style={{
+            marginTop: "18px",
+            display: "flex",
+            justifyContent: "center",
+            gap: "10px",
+          }}
+        >
+          <button
+            onClick={togglePlay}
+            disabled={isPlaying}
+            style={{
+              padding: "12px 24px",
+              background: "linear-gradient(90deg, #444, #444)",
+              border: "none",
+              borderRadius: "8px",
+              color: isPlaying ? "#aaa" : "#000",
+              fontWeight: 700,
+              cursor: isPlaying ? "not-allowed" : "pointer",
+              opacity: isPlaying ? 0.6 : 1,
+              fontSize: "1em",
+              transition: "all 0.3s ease",
+            }}
+          >
+            {isPlaying ? "▶️ Playing..." : "▶️ Play"}
+          </button>
+
+          <button
+            onClick={reset}
+            style={{
+              padding: "12px 20px",
+              background: "#3b3939ff",
+              borderRadius: "8px",
+              color: "#ddd",
+              fontWeight: 600,
+              cursor: "pointer",
+              transition: "0.3s",
+            }}
+          >
+            🔁 Reset
+          </button>
+
+          <button
+            onClick={handleNextRound}
+            disabled={roundIndex >= TOTAL_ROUNDS - 1}
+            style={{
+              padding: "12px 20px",
+              background:
+                roundIndex >= TOTAL_ROUNDS - 1
+                  ? "#222"
+                  : "linear-gradient(90deg, #555, #777)",
+              borderRadius: "8px",
+              color: roundIndex >= TOTAL_ROUNDS - 1 ? "#666" : "#000",
+              fontWeight: 600,
+              cursor:
+                roundIndex >= TOTAL_ROUNDS - 1 ? "not-allowed" : "pointer",
+              transition: "0.3s",
+            }}
+          >
+            ➡ Next Round
+          </button>
+        </div>
+
+        {/* Export Button */}
+        {!locked && (
+          <div
+            style={{
+              marginTop: "18px",
+              display: "flex",
+              justifyContent: "center",
+            }}
+          >
+            <button
+              onClick={handleExport}
+              style={{
+                padding: "10px 24px",
+                background: "linear-gradient(90deg, #555, #888)",
+                border: "none",
+                borderRadius: "8px",
+                color: "#000",
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              📁 Export error_info.json
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Right Panel */}
+      <div
+        style={{
+          width: "880px",
+          flexShrink: 0,
+          borderLeft: "2px solid #222",
+          paddingLeft: "20px",
+          textAlign: "center",
+          opacity: locked ? 0.4 : 1,
+          pointerEvents: locked ? "none" : "auto",
+          transition: "opacity 0.3s ease",
+        }}
+      >
+        {locked ? (
+          <div
+            style={{
+              background: "#1c1c1c",
+              padding: "40px 20px",
+              borderRadius: "8px",
+              border: "1px solid #444",
+              color: "#ccc",
+              marginTop: "40px",
+              boxShadow: "inset 0 0 15px rgba(0,0,0,0.3)",
+            }}
+          >
+            <h3 style={{ color: "#ffd54f" }}>⚠️ Locked</h3>
+            <p>
+              Wait until the <strong>1 Round of Play</strong> finishes to edit
+              intervals.
+            </p>
+          </div>
+        ) : intervals.length === 0 ? (
+          <p style={{ color: "#888" }}>No markers yet.</p>
+        ) : (
+          <div
+            style={{
+              maxHeight: "70vh",
+              overflowY: "auto",
+              textAlign: "left",
+              paddingRight: "8px",
+            }}
+          >
+            {intervals.map((intv, i) => {
+              const isSelected = selectedInterval?.index === i;
+
+              const baseFrame = intv.baseFrame;
+              let startFrame = baseFrame + intv.startOffset;
+              let endFrame = baseFrame + intv.endOffset;
+
+              startFrame = Math.max(startFrame, 0);
+              endFrame = Math.min(endFrame, totalFrames - 1);
+
+              if (startFrame > endFrame) {
+                const tmp = startFrame;
+                startFrame = endFrame;
+                endFrame = tmp;
+              }
+
+              const startTimeSec = startFrame * frameDuration;
+              const endTimeSec = endFrame * frameDuration;
+
+              const widthPercent =
+                totalFrames > 0
+                  ? ((endFrame - startFrame + 1) / totalFrames) * 100
+                  : 0;
+              const leftPercent =
+                totalFrames > 0 ? (startFrame / totalFrames) * 100 : 0;
+
+              return (
+                <div
+                  key={i}
+                  onClick={() => {
+                    setSelectedInterval({ index: i, ...intv });
+                    handleReplayFromBase(intv);
+                  }}
+                  style={{
+                    border: isSelected
+                      ? "2px solid #ffd54f"
+                      : "1px solid #333",
+                    borderRadius: "10px",
+                    padding: "12px",
+                    marginBottom: "12px",
+                    background: isSelected ? "#332b00" : "#181818",
+                    cursor: "pointer",
+                    color: isSelected ? "#fff5c0" : "#ddd",
+                    transition: "all 0.2s ease",
+                    boxShadow: isSelected
+                      ? "0 0 10px rgba(255,213,79,0.3)"
+                      : "none",
+                  }}
+                >
+                  <p style={{ margin: 0, fontWeight: 600 }}>
+                    #{i + 1}{" "}
+                    <span
+                      style={{
+                        background: "#333",
+                        padding: "3px 6px",
+                        borderRadius: "4px",
+                        fontSize: "0.85em",
+                      }}
+                    >
+                      Base: frame {baseFrame} ({baseTimeLabel(baseFrame)})
+                    </span>
+                  </p>
+                  <p
+                    style={{
+                      margin: "4px 0",
+                      fontSize: "0.9em",
+                      color: "#aaa",
+                    }}
+                  >
+                    Start: {startTimeSec.toFixed(2)}s | End:{" "}
+                    {endTimeSec.toFixed(2)}s
+                  </p>
+
+                  {intv.reason && (
+                    <p
+                      style={{
+                        margin: "4px 0 0 0",
+                        fontSize: "0.85em",
+                        color: "#bbb",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      📝 {intv.reason}
+                    </p>
+                  )}
+
+                  <div
+                    style={{
+                      position: "relative",
+                      height: "8px",
+                      background: "#333",
+                      borderRadius: "3px",
+                      marginTop: "6px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: `${leftPercent}%`,
+                        width: `${widthPercent}%`,
+                        height: "100%",
+                        background: isSelected ? "#ffd54f" : "#ff4444",
+                        borderRadius: "3px",
+                      }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {!locked && selectedInterval && (
+          <ReplayWindow
+            selectedInterval={selectedInterval}
+            handleOffsetEdit={handleOffsetEdit}
+            handleReplayFromBase={handleReplayFromBase}
+            deleteInterval={deleteInterval}
+            handleReasonChange={handleReasonChange}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ReplayWindow: 프레임 단위 조정 + reason 메모 */
+function ReplayWindow({
+  selectedInterval,
+  handleOffsetEdit,
+  handleReplayFromBase,
+  deleteInterval,
+  handleReasonChange,
+}) {
+  const baseFrame = selectedInterval.baseFrame;
+  const baseTimeSec = baseFrame * FRAME_DURATION;
+
+  const startFrame = baseFrame + selectedInterval.startOffset;
+  const endFrame = baseFrame + selectedInterval.endOffset;
+
+  const startTimeSec = startFrame * FRAME_DURATION;
+  const endTimeSec = endFrame * FRAME_DURATION;
+
+  return (
+    <div
+      style={{
+        marginTop: "25px",
+        borderTop: "1px solid #333",
+        paddingTop: "20px",
+        color: "#eee",
+      }}
+    >
+      <h3 style={{ color: "#ffffff", marginBottom: "8px" }}>🎯 Replay Window</h3>
+      <p style={{ color: "#aaa", marginBottom: "6px", fontSize: "0.95em" }}>
+        Focus on <strong>frame {baseFrame}</strong> ({baseTimeSec.toFixed(2)}s)
+      </p>
+      <p style={{ color: "#aaa", marginBottom: "10px", fontSize: "0.9em" }}>
+        Start frame {startFrame} ({startTimeSec.toFixed(2)}s), End frame{" "}
+        {endFrame} ({endTimeSec.toFixed(2)}s)
+      </p>
+
+      <Range
+        values={[selectedInterval.startOffset, selectedInterval.endOffset]}
+        step={1}
+        min={MIN_OFFSET}
+        max={MAX_OFFSET}
+        onChange={(values) => {
+          handleOffsetEdit("startOffset", values[0]);
+          handleOffsetEdit("endOffset", values[1]);
+        }}
+        renderTrack={({ props, children }) => (
+          <div
+            {...props}
+            style={{
+              ...props.style,
+              height: "12px",
+              width: "100%",
+              borderRadius: "6px",
+              background: "#444",
+              position: "relative",
+            }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                left: `${
+                  ((selectedInterval.startOffset - MIN_OFFSET) /
+                    (MAX_OFFSET - MIN_OFFSET)) *
+                  100
+                }%`,
+                width: `${
+                  ((selectedInterval.endOffset - selectedInterval.startOffset) /
+                    (MAX_OFFSET - MIN_OFFSET)) *
+                  100
+                }%`,
+                height: "100%",
+                background: "linear-gradient(90deg, #ffd54f, #ffd54f)",
+                borderRadius: "6px",
+              }}
+            />
+            {children}
+          </div>
+        )}
+        renderThumb={({ props }) => (
+          <div
+            {...props}
+            style={{
+              ...props.style,
+              height: "18px",
+              width: "18px",
+              borderRadius: "50%",
+              background: "#ffffff",
+            }}
+          />
+        )}
+      />
+
+      {/* 오프셋 숫자 입력 */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          marginTop: "10px",
+          fontSize: "0.85em",
+          color: "#ccc",
+        }}
+      >
+        <div>
+          <div>Start offset frames</div>
+          <input
+            type="number"
+            value={selectedInterval.startOffset}
+            onChange={(e) => handleOffsetEdit("startOffset", e.target.value)}
+            style={{
+              width: "80px",
+              padding: "4px 6px",
+              marginTop: "4px",
+              background: "#222",
+              border: "1px solid #555",
+              borderRadius: "4px",
+              color: "#eee",
+            }}
+          />
+        </div>
+        <div>
+          <div>End offset frames</div>
+          <input
+            type="number"
+            value={selectedInterval.endOffset}
+            onChange={(e) => handleOffsetEdit("endOffset", e.target.value)}
+            style={{
+              width: "80px",
+              padding: "4px 6px",
+              marginTop: "4px",
+              background: "#222",
+              border: "1px solid #555",
+              borderRadius: "4px",
+              color: "#eee",
+            }}
+          />
+        </div>
+      </div>
+
+      {/* 캘리브레이션 이유 메모 */}
+      <div
+        style={{
+          marginTop: "16px",
+          textAlign: "left",
+          fontSize: "0.9em",
+        }}
+      >
+        <div style={{ marginBottom: "4px", color: "#ccc" }}>
+          Calibration note
+        </div>
+        <textarea
+          value={selectedInterval.reason || ""}
+          onChange={(e) => handleReasonChange(e.target.value)}
+          placeholder="이 구간으로 다시 잡은 이유를 메모해 주세요."
+          rows={3}
+          style={{
+            width: "100%",
+            resize: "vertical",
+            padding: "8px 10px",
+            background: "#181818",
+            border: "1px solid #555",
+            borderRadius: "6px",
+            color: "#eee",
+            fontFamily: "inherit",
+            fontSize: "0.9em",
+          }}
+        />
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          gap: "12px",
+          marginTop: "20px",
+        }}
+      >
+        <button
+          onClick={() => handleReplayFromBase(selectedInterval)}
+          style={{
+            padding: "10px 20px",
+            background: "linear-gradient(90deg, #292828ff)",
+            border: "none",
+            borderRadius: "8px",
+            color: "#fff",
+            fontWeight: 700,
+            cursor: "pointer",
+          }}
+        >
+          🔁 Replay
+        </button>
+        <button
+          onClick={() => deleteInterval(selectedInterval.index)}
+          style={{
+            padding: "10px 20px",
+            background: "linear-gradient(90deg, #292828ff)",
+            border: "none",
+            borderRadius: "8px",
+            color: "#c6c1c1ff",
+            fontWeight: 700,
+          }}
+        >
+          🗑 Delete
+        </button>
+      </div>
+    </div>
+  );
+}
