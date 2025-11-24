@@ -118,6 +118,15 @@ export default function App() {
   // Space key → 현재 프레임 index 저장
   useEffect(() => {
     const handleKeyDown = (e) => {
+      // 입력 중일 때는 무시
+      const tag = e.target.tagName?.toLowerCase?.() || "";
+      const isTyping =
+        tag === "textarea" ||
+        tag === "input" ||
+        e.target.isContentEditable;
+
+      if (isTyping) return;
+
       if (e.code === "Space") {
         e.preventDefault();
 
@@ -353,22 +362,19 @@ export default function App() {
       }}
     >
       {/* Main viewer */}
-          <div
-          style={{
-            textAlign: "center",
-            flex: 1,
-            minWidth: 0,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            position: "sticky",
-            top: 0,
-            height: "100vh",
-          }}
-        >
-
-
-
+      <div
+        style={{
+          textAlign: "center",
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          position: "sticky",
+          top: 0,
+          height: "100vh",
+        }}
+      >
         <h2
           style={{
             color: "#ffffff",
@@ -604,20 +610,19 @@ export default function App() {
 
       {/* Right Panel */}
       <div
-  style={{
-    width: "600px",
-    flexShrink: 0,
-    borderLeft: "2px solid #222",
-    paddingLeft: "20px",
-    textAlign: "center",
-    opacity: locked ? 0.4 : 1,
-    pointerEvents: locked ? "none" : "auto",
-    transition: "opacity 0.3s ease",
-    height: "100vh",
-    overflowY: "auto",
-  }}
->
-
+        style={{
+          width: "600px",
+          flexShrink: 0,
+          borderLeft: "2px solid #222",
+          paddingLeft: "20px",
+          textAlign: "center",
+          opacity: locked ? 0.4 : 1,
+          pointerEvents: locked ? "none" : "auto",
+          transition: "opacity 0.3s ease",
+          height: "100vh",
+          overflowY: "auto",
+        }}
+      >
         {locked ? (
           <div
             style={{
