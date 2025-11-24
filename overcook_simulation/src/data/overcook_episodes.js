@@ -13,7 +13,7 @@ function normalizeModule(mod) {
   return mod && typeof mod === "object" && "default" in mod ? mod.default : mod;
 }
 
-// x,y 스왑 함수  (trajectory: x=row, y=col  → viewer: x=col, y=row)
+// x,y 스왑 함수  (trajectory: x=row, y=col → viewer: x=col, y=row)
 function swapPos(pos) {
   if (!pos || typeof pos.x !== "number" || typeof pos.y !== "number") {
     return pos;
@@ -22,7 +22,7 @@ function swapPos(pos) {
 }
 
 // trajectory 포맷을 viewer 포맷으로 통일
-// 지원 포맷
+// 지원 포맷: 
 // 1) { staticInfo, dynamicState: [...] }
 // 2) { staticInfo, frames: [...] }
 function adaptEpisode(raw, fileName = "unknown") {
@@ -42,8 +42,8 @@ function adaptEpisode(raw, fileName = "unknown") {
     );
   }
 
-  // 여기서 플레이어/오브젝트 좌표만 x,y 스왑해서 viewer 포맷으로 변환
-  const frames = rawFrames.map((state) => ({
+  // **여기서 200 timestep만 사용하도록 slice 적용**
+  const frames = rawFrames.slice(0, 200).map((state) => ({
     ...state,
     players: (state.players || []).map((p) => ({
       ...p,
