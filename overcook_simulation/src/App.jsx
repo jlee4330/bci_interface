@@ -1,11 +1,10 @@
-// src/App.jsx
 import React, { useState, useEffect, useRef } from "react";
 import OvercookScene from "./components/OvercookScene";
 import { ROUNDS } from "./data/overcook_episodes";
 import { Range } from "react-range";
 
-const MIN_OFFSET = -5;
-const MAX_OFFSET = 5;
+const MIN_OFFSET = -20;
+const MAX_OFFSET = 20;
 const FRAME_DURATION = 0.3;
 
 // 0: random0_medium, 1: random1, 2: random3, 3: small_corridor
@@ -48,20 +47,24 @@ export default function App() {
 
   const [frameIndex, setFrameIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
+  const [playMode, setPlayMode] = useState("full"); // "full" | "segment"
+  const [elapsed, setElapsed] = useState(0); // 초 단위 경과 시간
+
   const [rawMarkers, setRawMarkers] = useState([]); // [frameIndex, ...]
   const [intervals, setIntervals] = useState([]); // [{ baseFrame, startOffset, endOffset, reason }, ...]
   const [selectedInterval, setSelectedInterval] = useState(null);
   const [locked, setLocked] = useState(true);
 
-  const startTimeRef = useRef(null);
   const rafRef = useRef(null);
-  const replayRef = useRef(null);
+  const segmentEndFrameRef = useRef(null); // 구간 재생 끝 프레임
 
   const totalFrames = episode.frames.length;
   const frameDuration = FRAME_DURATION;
   const totalTime = totalFrames * frameDuration;
   const currentLayoutIdx = LAYOUT_ORDER[roundIndex];
+
+  // 구간 재생 여부
+  const isReplaying = playMode === "segment" && isPlaying;
 
   // 메인 재생 루프
   useEffect(() => {
@@ -70,19 +73,39 @@ export default function App() {
       return;
     }
 
-    startTimeRef.current = performance.now() - elapsed * 1000;
+    // 이 effect가 시작될 때의 "기준 시점"을 로컬로 잡음
+    const startTime = performance.now() - elapsed * 1000;
 
     const update = () => {
       const now = performance.now();
-      const newElapsed = (now - startTimeRef.current) / 1000;
-      setElapsed(newElapsed);
-
+      const newElapsed = (now - startTime) / 1000;
       const newFrameIndex = Math.floor(newElapsed / frameDuration);
 
+      // 구간 재생 모드
+      if (playMode === "segment") {
+        const endFrame = segmentEndFrameRef.current ?? totalFrames - 1;
+
+        if (newFrameIndex >= endFrame) {
+          setFrameIndex(endFrame);
+          setElapsed(endFrame * frameDuration);
+          setIsPlaying(false);
+          return;
+        }
+
+        setFrameIndex(newFrameIndex);
+        setElapsed(newElapsed);
+        rafRef.current = requestAnimationFrame(update);
+        return;
+      }
+
+      // 전체 재생 모드
       if (newFrameIndex < totalFrames) {
         setFrameIndex(newFrameIndex);
+        setElapsed(newElapsed);
         rafRef.current = requestAnimationFrame(update);
       } else {
+        setFrameIndex(totalFrames - 1);
+        setElapsed(totalTime);
         setIsPlaying(false);
         setLocked(false);
       }
@@ -90,7 +113,7 @@ export default function App() {
 
     rafRef.current = requestAnimationFrame(update);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [isPlaying, frameDuration, totalFrames, elapsed]);
+  }, [isPlaying, playMode, frameDuration, totalFrames, totalTime, elapsed]);
 
   // Space key → 현재 프레임 index 저장
   useEffect(() => {
@@ -134,31 +157,44 @@ export default function App() {
     }
 
     const startTime = startFrame * frameDuration;
-    const durationFrames = Math.max(1, endFrame - startFrame + 1);
-    const duration = durationFrames * frameDuration;
 
-    setIsPlaying(false);
+    // 1) 현재 재생 완전히 정지
     cancelAnimationFrame(rafRef.current);
+    setIsPlaying(false);
 
-    setElapsed(startTime);
-    setFrameIndex(startFrame);
+    // 2) 구간 정보 세팅 후, 다음 프레임에서 다시 시작
+    segmentEndFrameRef.current = endFrame;
+    setPlayMode("segment");
 
-    clearTimeout(replayRef.current);
-    setIsPlaying(true);
-    replayRef.current = setTimeout(() => setIsPlaying(false), duration * 1000);
+    requestAnimationFrame(() => {
+      setFrameIndex(startFrame);
+      setElapsed(startTime);
+      setIsPlaying(true);
+    });
   };
 
   const togglePlay = () => {
     if (isPlaying) return;
+
+    // 에피소드 끝까지 갔으면 다시 처음부터
+    if (frameIndex >= totalFrames - 1) {
+      setFrameIndex(0);
+      setElapsed(0);
+    }
+
+    cancelAnimationFrame(rafRef.current);
+    setPlayMode("full");
     setLocked(true);
     setIsPlaying(true);
   };
 
   // 같은 trajectory에서 완전 초기화
   const reset = () => {
-    setIsPlaying(false);
     cancelAnimationFrame(rafRef.current);
-    clearTimeout(replayRef.current);
+
+    setIsPlaying(false);
+    setPlayMode("full");
+    segmentEndFrameRef.current = null;
 
     setElapsed(0);
     setFrameIndex(0);
@@ -178,9 +214,11 @@ export default function App() {
       usedFilesByLayout
     );
 
-    setIsPlaying(false);
     cancelAnimationFrame(rafRef.current);
-    clearTimeout(replayRef.current);
+
+    setIsPlaying(false);
+    setPlayMode("full");
+    segmentEndFrameRef.current = null;
 
     setRoundIndex(nextRoundIndex);
     setEpisode(nextEpisode);
@@ -297,34 +335,40 @@ export default function App() {
   const frame = episode.frames[Math.min(frameIndex, totalFrames - 1)];
   const progress = Math.min((elapsed / totalTime) * 100, 100);
 
- return (
-  <div
-    style={{
-      display: "flex",
-      justifyContent: "center",
-      gap: "40px",
-      padding: "30px",
-      background: "linear-gradient(160deg, #0d0d0d 0%, #1b1b1b 100%)",
-      color: "#f0f0f0",
-      height: "100vh",
-      width: "100vw",
-      boxSizing: "border-box",
-      overflowX: "hidden",   // 가로만 막고
-      overflowY: "auto",     // 세로 스크롤 허용
-      fontFamily: "Inter, sans-serif",
-    }}
-  >
+  return (
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "center",
+        gap: "40px",
+        padding: "30px",
+        background: "linear-gradient(160deg, #0d0d0d 0%, #1b1b1b 100%)",
+        color: "#f0f0f0",
+        height: "100vh",
+        width: "100vw",
+        boxSizing: "border-box",
+        overflowX: "hidden",
+        overflowY: "auto",
+        fontFamily: "Inter, sans-serif",
+      }}
+    >
       {/* Main viewer */}
-      <div
-        style={{
-          textAlign: "center",
-          flex: 1,
-          minWidth: 0,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-        }}
-      >
+          <div
+          style={{
+            textAlign: "center",
+            flex: 1,
+            minWidth: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            position: "sticky",
+            top: 0,
+            height: "100vh",
+          }}
+        >
+
+
+
         <h2
           style={{
             color: "#ffffff",
@@ -377,11 +421,15 @@ export default function App() {
         >
           <div
             style={{
-              transform: "scale(1.2)", // 여기 숫자를 조절해서 크기 변경
+              transform: "scale(1.2)",
               transformOrigin: "top center",
             }}
           >
-            <OvercookScene staticInfo={episode.staticInfo} frame={frame} />
+            <OvercookScene
+              staticInfo={episode.staticInfo}
+              frame={frame}
+              isReplaying={isReplaying}
+            />
           </div>
         </div>
 
@@ -556,17 +604,20 @@ export default function App() {
 
       {/* Right Panel */}
       <div
-        style={{
-          width: "600px",
-          flexShrink: 0,
-          borderLeft: "2px solid #222",
-          paddingLeft: "20px",
-          textAlign: "center",
-          opacity: locked ? 0.4 : 1,
-          pointerEvents: locked ? "none" : "auto",
-          transition: "opacity 0.3s ease",
-        }}
-      >
+  style={{
+    width: "600px",
+    flexShrink: 0,
+    borderLeft: "2px solid #222",
+    paddingLeft: "20px",
+    textAlign: "center",
+    opacity: locked ? 0.4 : 1,
+    pointerEvents: locked ? "none" : "auto",
+    transition: "opacity 0.3s ease",
+    height: "100vh",
+    overflowY: "auto",
+  }}
+>
+
         {locked ? (
           <div
             style={{
@@ -761,6 +812,46 @@ function ReplayWindow({
         {endFrame} ({endTimeSec.toFixed(2)}s)
       </p>
 
+      {/* === Replay / Delete 버튼 (위로 이동) === */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          gap: "12px",
+          marginBottom: "20px",
+        }}
+      >
+        <button
+          onClick={() => handleReplayFromBase(selectedInterval)}
+          style={{
+            padding: "10px 22px",
+            background: "linear-gradient(90deg, #292828ff)",
+            border: "none",
+            borderRadius: "8px",
+            color: "#fff",
+            fontWeight: 700,
+            cursor: "pointer",
+          }}
+        >
+          🔁 Replay
+        </button>
+        <button
+          onClick={() => deleteInterval(selectedInterval.index)}
+          style={{
+            padding: "10px 22px",
+            background: "linear-gradient(90deg, #292828ff)",
+            border: "none",
+            borderRadius: "8px",
+            color: "#c6c1c1ff",
+            fontWeight: 700,
+            cursor: "pointer",
+          }}
+        >
+          🗑 Delete
+        </button>
+      </div>
+
+      {/* === 오프셋 조절 UI === */}
       <div
         style={{
           padding: "12px 14px",
@@ -879,7 +970,7 @@ function ReplayWindow({
         </div>
       </div>
 
-      {/* 캘리브레이션 이유 메모 */}
+      {/* === Calibration Note === */}
       <div
         style={{
           marginTop: "18px",
@@ -909,43 +1000,6 @@ function ReplayWindow({
             lineHeight: 1.5,
           }}
         />
-      </div>
-
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "center",
-          gap: "12px",
-          marginTop: "20px",
-        }}
-      >
-        <button
-          onClick={() => handleReplayFromBase(selectedInterval)}
-          style={{
-            padding: "10px 22px",
-            background: "linear-gradient(90deg, #292828ff)",
-            border: "none",
-            borderRadius: "8px",
-            color: "#fff",
-            fontWeight: 700,
-            cursor: "pointer",
-          }}
-        >
-          🔁 Replay
-        </button>
-        <button
-          onClick={() => deleteInterval(selectedInterval.index)}
-          style={{
-            padding: "10px 22px",
-            background: "linear-gradient(90deg, #292828ff)",
-            border: "none",
-            borderRadius: "8px",
-            color: "#c6c1c1ff",
-            fontWeight: 700,
-          }}
-        >
-          🗑 Delete
-        </button>
       </div>
     </div>
   );

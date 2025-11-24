@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState } from "react";
 
-export default function OvercookScene({ staticInfo, frame }) {
+export default function OvercookScene({ staticInfo, frame, isReplaying }) {
   const gridSize = 80;
   const { grid, width, height } = staticInfo;
 
@@ -48,6 +48,13 @@ export default function OvercookScene({ staticInfo, frame }) {
 
   // fake object 업데이트  로직용 이전 프레임 사용
   useEffect(() => {
+    // replay 중에는 fake object 사용하지 않음
+    if (isReplaying) {
+      fakeObjectsRef.current = [];
+      prevLogicFrameRef.current = frame;
+      return;
+    }
+
     // 에피소드 첫 프레임이면 이전 정보 리셋하고 종료
     if (frame.timestep === 0) {
       fakeObjectsRef.current = [];
@@ -134,7 +141,7 @@ export default function OvercookScene({ staticInfo, frame }) {
     fakeObjectsRef.current = currentFake;
     // 이번 프레임을 로직용 이전 프레임으로 저장
     prevLogicFrameRef.current = frame;
-  }, [frame, grid, width, height]);
+  }, [frame, grid, width, height, isReplaying]);
 
   // 보간 애니메이션  이쪽은 기존처럼 prevFrameRef 사용
   useEffect(() => {
@@ -418,7 +425,10 @@ export default function OvercookScene({ staticInfo, frame }) {
     );
   };
 
-  const combinedObjects = [...frame.objects, ...fakeObjectsRef.current];
+  // replay 중에는 fake object 제외
+  const combinedObjects = isReplaying
+    ? frame.objects
+    : [...frame.objects, ...fakeObjectsRef.current];
 
   return (
     <svg
