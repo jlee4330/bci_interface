@@ -2,10 +2,10 @@ from PIL import Image
 import os
 
 # 입력 시트
-sheet = Image.open("sprite_sheet.png")
+sheet = Image.open("spritesheet2.png")
 
-# 타일 개수 설정 (가로 4, 세로 4 → 총 16)
-cols, rows = 4, 4
+# 타일 개수 설정 (가로 2, 세로 3 → 총 6)
+cols, rows = 2, 3
 
 # 타일 크기 계산
 tile_width = sheet.width // cols

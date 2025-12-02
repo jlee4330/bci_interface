@@ -1,49 +1,22 @@
+// src/App.jsx
+
 import React, { useState, useEffect, useRef } from "react";
 import OvercookScene from "./components/OvercookScene";
-import { ROUNDS } from "./data/overcook_episodes";
+import { adaptEpisode } from "./data/overcook_episodes";
 import { Range } from "react-range";
 
 const MIN_OFFSET = -20;
 const MAX_OFFSET = 20;
 const FRAME_DURATION = 0.3;
 
-// 0: random0_medium, 1: random1, 2: random3, 3: small_corridor
-const LAYOUT_ORDER = [0, 1, 2, 3, 0, 1, 2, 3];
-const TOTAL_ROUNDS = 8;
-
-// 초기 라운드용 trajectory 선택
-function createInitialRoundState() {
-  const layoutIdx = LAYOUT_ORDER[0];
-  const eps = ROUNDS[layoutIdx].episodes;
-  const ep = eps[Math.floor(Math.random() * eps.length)];
-  const used = ROUNDS.map(() => []);
-  used[layoutIdx] = [ep.fileName];
-  return { initialEpisode: ep, initialUsed: used };
-}
-
-// 라운드별 trajectory 선택 (같은 폴더에서는 아직 안 쓴 파일 우선)
-function pickEpisodeForRound(roundIndex, usedFilesByLayout) {
-  const layoutIdx = LAYOUT_ORDER[roundIndex];
-  const eps = ROUNDS[layoutIdx].episodes;
-  const used = usedFilesByLayout[layoutIdx] || [];
-
-  const candidates = eps.filter((ep) => !used.includes(ep.fileName));
-  const list = candidates.length > 0 ? candidates : eps;
-
-  const ep = list[Math.floor(Math.random() * list.length)];
-  return { episode: ep, layoutIdx };
-}
-
+// 시간 라벨 (필요하면 사용)
 function baseTimeLabel(frame) {
   return `${(frame * FRAME_DURATION).toFixed(2)}s`;
 }
 
-const { initialEpisode, initialUsed } = createInitialRoundState();
-
 export default function App() {
-  const [roundIndex, setRoundIndex] = useState(0); // 0~7
-  const [episode, setEpisode] = useState(initialEpisode);
-  const [usedFilesByLayout, setUsedFilesByLayout] = useState(initialUsed);
+  const [episode, setEpisode] = useState(null); // 업로드된 에피소드
+  const [fileName, setFileName] = useState(""); // 업로드된 파일 이름
 
   const [frameIndex, setFrameIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -58,22 +31,69 @@ export default function App() {
   const rafRef = useRef(null);
   const segmentEndFrameRef = useRef(null); // 구간 재생 끝 프레임
 
-  const totalFrames = episode.frames.length;
   const frameDuration = FRAME_DURATION;
+  const totalFrames = episode?.frames?.length ?? 0;
   const totalTime = totalFrames * frameDuration;
-  const currentLayoutIdx = LAYOUT_ORDER[roundIndex];
+  const hasEpisode = totalFrames > 0;
+
+  const frame =
+    hasEpisode && totalFrames > 0
+      ? episode.frames[Math.min(frameIndex, totalFrames - 1)]
+      : null;
+  const progress =
+    hasEpisode && totalTime > 0
+      ? Math.min((elapsed / totalTime) * 100, 100)
+      : 0;
 
   // 구간 재생 여부
   const isReplaying = playMode === "segment" && isPlaying;
 
+  // JSON 파일 업로드 핸들러
+  const handleFileUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const raw = JSON.parse(event.target.result);
+        const adapted = adaptEpisode(raw, file.name);
+
+        // 기존 재생 취소
+        cancelAnimationFrame(rafRef.current);
+
+        // 새 에피소드로 상태 리셋
+        setEpisode({
+          fileName: file.name,
+          ...adapted,
+        });
+        setFileName(file.name);
+
+        setIsPlaying(false);
+        setPlayMode("full");
+        segmentEndFrameRef.current = null;
+
+        setElapsed(0);
+        setFrameIndex(0);
+        setRawMarkers([]);
+        setIntervals([]);
+        setSelectedInterval(null);
+        setLocked(true);
+      } catch (err) {
+        console.error("Failed to read JSON", err);
+        alert("유효한 JSON 파일이 아닙니다.");
+      }
+    };
+    reader.readAsText(file);
+  };
+
   // 메인 재생 루프
   useEffect(() => {
-    if (!isPlaying) {
+    if (!isPlaying || !episode || totalFrames === 0) {
       cancelAnimationFrame(rafRef.current);
       return;
     }
 
-    // 이 effect가 시작될 때의 "기준 시점"을 로컬로 잡음
     const startTime = performance.now() - elapsed * 1000;
 
     const update = () => {
@@ -113,12 +133,11 @@ export default function App() {
 
     rafRef.current = requestAnimationFrame(update);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [isPlaying, playMode, frameDuration, totalFrames, totalTime, elapsed]);
+  }, [isPlaying, playMode, frameDuration, totalFrames, totalTime, elapsed, episode]);
 
   // Space key → 현재 프레임 index 저장
   useEffect(() => {
     const handleKeyDown = (e) => {
-      // 입력 중일 때는 무시
       const tag = e.target.tagName?.toLowerCase?.() || "";
       const isTyping =
         tag === "textarea" ||
@@ -129,6 +148,8 @@ export default function App() {
 
       if (e.code === "Space") {
         e.preventDefault();
+
+        if (!episode || totalFrames === 0) return;
 
         const currentFrame = frameIndex;
 
@@ -147,11 +168,11 @@ export default function App() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [frameIndex]);
+  }, [frameIndex, episode, totalFrames]);
 
   // 선택한 interval만 재생
   const handleReplayFromBase = (intv) => {
-    if (!intv) return;
+    if (!intv || !episode || totalFrames === 0) return;
 
     let startFrame = intv.baseFrame + intv.startOffset;
     let endFrame = intv.baseFrame + intv.endOffset;
@@ -167,11 +188,9 @@ export default function App() {
 
     const startTime = startFrame * frameDuration;
 
-    // 1) 현재 재생 완전히 정지
     cancelAnimationFrame(rafRef.current);
     setIsPlaying(false);
 
-    // 2) 구간 정보 세팅 후, 다음 프레임에서 다시 시작
     segmentEndFrameRef.current = endFrame;
     setPlayMode("segment");
 
@@ -183,9 +202,9 @@ export default function App() {
   };
 
   const togglePlay = () => {
+    if (!episode || totalFrames === 0) return;
     if (isPlaying) return;
 
-    // 에피소드 끝까지 갔으면 다시 처음부터
     if (frameIndex >= totalFrames - 1) {
       setFrameIndex(0);
       setElapsed(0);
@@ -204,40 +223,6 @@ export default function App() {
     setIsPlaying(false);
     setPlayMode("full");
     segmentEndFrameRef.current = null;
-
-    setElapsed(0);
-    setFrameIndex(0);
-    setRawMarkers([]);
-    setIntervals([]);
-    setSelectedInterval(null);
-    setLocked(true);
-  };
-
-  // 다음 라운드
-  const handleNextRound = () => {
-    if (roundIndex >= TOTAL_ROUNDS - 1) return;
-
-    const nextRoundIndex = roundIndex + 1;
-    const { episode: nextEpisode, layoutIdx } = pickEpisodeForRound(
-      nextRoundIndex,
-      usedFilesByLayout
-    );
-
-    cancelAnimationFrame(rafRef.current);
-
-    setIsPlaying(false);
-    setPlayMode("full");
-    segmentEndFrameRef.current = null;
-
-    setRoundIndex(nextRoundIndex);
-    setEpisode(nextEpisode);
-    setUsedFilesByLayout((prev) => {
-      const copy = prev.map((arr) => [...arr]);
-      if (!copy[layoutIdx].includes(nextEpisode.fileName)) {
-        copy[layoutIdx].push(nextEpisode.fileName);
-      }
-      return copy;
-    });
 
     setElapsed(0);
     setFrameIndex(0);
@@ -299,6 +284,8 @@ export default function App() {
 
   // 최종 export
   const handleExport = () => {
+    if (!episode || totalFrames === 0) return;
+
     const realTimeData = rawMarkers.slice();
 
     const calibratedData = intervals.map((intv) => {
@@ -319,12 +306,13 @@ export default function App() {
     });
 
     const reasons = intervals.map((intv) => intv.reason || "");
-    const layoutIdx = LAYOUT_ORDER[roundIndex];
+    const layout =
+      episode.staticInfo?.layoutName ||
+      episode.staticInfo?.mapName ||
+      "uploaded";
 
     const payload = {
-      round: roundIndex + 1,
-      layout: ROUNDS[layoutIdx].label,
-      fileName: episode.fileName,
+      fileName: episode.fileName || fileName || "uploaded.json",
       errorInfo: [
         {
           type: "real-time",
@@ -341,9 +329,25 @@ export default function App() {
     exportJSON(payload, "error_info.json");
   };
 
-  const frame = episode.frames[Math.min(frameIndex, totalFrames - 1)];
-  const progress = Math.min((elapsed / totalTime) * 100, 100);
+  // 업로드 버튼 기준 pill 스타일
+  const pillStyle = {
+    background: "#333333",
+    color: "#f0f0f0",
+    borderRadius: "6px",
+  };
 
+  // 공통 버튼 스타일
+  const commonButtonStyle = {
+    ...pillStyle,
+    padding: "6px 16px",
+    border: "none",
+    fontWeight: 600,
+    fontSize: "0.9em",
+    cursor: "pointer",
+    outline: "none",
+  };
+
+  // 메인 화면
   return (
     <div
       style={{
@@ -383,8 +387,7 @@ export default function App() {
             letterSpacing: "0.5px",
           }}
         >
-          Round {roundIndex + 1} / {TOTAL_ROUNDS} ·{" "}
-          {ROUNDS[currentLayoutIdx].label}
+          Overcooked Trajectory Viewer
         </h2>
 
         <div
@@ -394,56 +397,148 @@ export default function App() {
             marginBottom: "10px",
           }}
         >
-          Trajectory file: <code>{episode.fileName}</code>
+          {hasEpisode ? (
+            <>
+              Trajectory file <code>{episode.fileName}</code>
+            </>
+          ) : (
+            <>JSON trajectory 파일을 업로드해 주세요.</>
+          )}
         </div>
 
+        {/* 업로드 버튼 */}
+        <div style={{ marginBottom: "12px" }}>
+          <label
+            style={{
+              ...pillStyle,
+              padding: "6px 12px",
+              cursor: "pointer",
+              fontSize: "0.9em",
+              display: "inline-block",
+              outline: "none",
+            }}
+          >
+            JSON 파일 업로드
+            <input
+              type="file"
+              accept="application/json,.json"
+              onChange={handleFileUpload}
+              style={{ display: "none" }}
+            />
+          </label>
+        </div>
+
+        {/* 프레임 상태 표시 */}
         <div
           style={{
-            fontSize: "1.2em",
-            color: "#ffd54f",
+            ...pillStyle,
+            fontSize: "0.9em",
             marginBottom: "15px",
-            background: "#222",
             padding: "6px 12px",
             display: "inline-block",
-            borderRadius: "6px",
           }}
         >
-          ⏱ {elapsed.toFixed(2)}s / {totalTime.toFixed(2)}s{" "}
-          <span style={{ fontSize: "0.8em", marginLeft: "8px", color: "#aaa" }}>
-            (frame {frameIndex} / {totalFrames - 1})
-          </span>
+          {hasEpisode ? (
+            <>
+              Frame {frameIndex} / {totalFrames - 1}
+            </>
+          ) : (
+            <>No episode loaded</>
+          )}
         </div>
 
-        {/* 에이전트 화면 크게 + scale */}
+        {/* 에이전트 화면 */}
         <div
           style={{
             width: "100%",
-            maxWidth: "1300px",
-            height: "60vh",
+            maxWidth: "800px",
+            height: "50vh",
             display: "flex",
             justifyContent: "center",
             alignItems: "flex-start",
           }}
         >
-          <div
+          {hasEpisode && frame ? (
+            <div
+              style={{
+                transform: "scale(1.2)",
+                transformOrigin: "top center",
+              }}
+            >
+              <OvercookScene
+                staticInfo={episode.staticInfo}
+                frame={frame}
+                frames={episode.frames}
+                isReplaying={isReplaying}
+              />
+            </div>
+          ) : (
+            <div
+              style={{
+                border: "1px dashed #444",
+                borderRadius: "10px",
+                padding: "20px 40px",
+                color: "#777",
+                fontSize: "0.95em",
+              }}
+            >
+              JSON trajectory 파일을 업로드하면 여기에서 플레이 화면을 볼 수
+              있습니다.
+            </div>
+          )}
+        </div>
+
+        {/* Controls */}
+        <div
+          style={{
+            marginTop: "18px",
+            marginBottom: "10px",
+            display: "flex",
+            justifyContent: "center",
+            gap: "10px",
+          }}
+        >
+          {/* Play */}
+          <button
+            onClick={togglePlay}
+            disabled={isPlaying || !hasEpisode}
             style={{
-              transform: "scale(1.2)",
-              transformOrigin: "top center",
+              ...commonButtonStyle,
+              opacity: isPlaying || !hasEpisode ? 0.4 : 1,
+              cursor: isPlaying || !hasEpisode ? "not-allowed" : "pointer",
             }}
           >
-            <OvercookScene
-              staticInfo={episode.staticInfo}
-              frame={frame}
-              isReplaying={isReplaying}
-            />
-          </div>
+            {isPlaying ? "▶️ Playing..." : "▶️ Play"}
+          </button>
+
+          {/* Reset */}
+          <button
+            onClick={reset}
+            style={{
+              ...commonButtonStyle,
+            }}
+          >
+            🔁 Reset
+          </button>
+
+          {/* Export */}
+          {!locked && hasEpisode && (
+            <button
+              onClick={handleExport}
+              style={{
+                ...commonButtonStyle,
+              }}
+            >
+              📁 Export marker.json
+            </button>
+          )}
         </div>
 
         {/* Raw timeline */}
         <div
           style={{
             width: "50%",
-            margin: "18px auto 8px auto",
+            margin: "8px auto 8px auto",
             position: "relative",
             background: "#181818",
             borderRadius: "6px",
@@ -452,14 +547,26 @@ export default function App() {
         >
           <p
             style={{
-              margin: "0 0 6px 0",
+              margin: "0 0 4px 0",
               textAlign: "left",
               color: "#bbb",
               fontWeight: 500,
               fontSize: "0.9em",
             }}
           >
-            Raw Error Markers
+            Real-Time Markers
+          </p>
+          {/* 설명 한 줄 */}
+          <p
+            style={{
+              margin: "0 0 8px 0",
+              textAlign: "left",
+              color: "#888",
+              fontSize: "0.8em",
+            }}
+          >
+            Unexpected agent behavior를 보면 재생 중 Space 키를 눌러 해당 프레임에
+            마커를 추가하세요.
           </p>
           <div
             style={{
@@ -469,6 +576,7 @@ export default function App() {
               borderRadius: "6px",
             }}
           >
+            {/* 진행 바 단색 */}
             <div
               style={{
                 position: "absolute",
@@ -476,7 +584,7 @@ export default function App() {
                 left: 0,
                 width: `${progress}%`,
                 height: "8px",
-                background: "linear-gradient(90deg, #807b7bff, #ffffffff)",
+                background: "#666666",
                 borderRadius: "6px",
               }}
             />
@@ -489,9 +597,13 @@ export default function App() {
                 <div
                   key={i}
                   onClick={() => handleReplayFromBase(intervals[i])}
-                  title={`Replay around frame ${markerFrame} (${(
-                    markerFrame * frameDuration
-                  ).toFixed(2)}s)`}
+                  title={
+                    hasEpisode
+                      ? `Replay around frame ${markerFrame} (${(
+                          markerFrame * frameDuration
+                        ).toFixed(2)}s)`
+                      : ""
+                  }
                   style={{
                     position: "absolute",
                     left: `${pos}%`,
@@ -504,11 +616,8 @@ export default function App() {
                         : "rgba(255,68,68,0.9)",
                     borderRadius: "2px",
                     transform: "translateX(-50%)",
-                    cursor: "pointer",
-                    boxShadow:
-                      selectedInterval?.index === i
-                        ? "0 0 8px rgba(255,213,79,0.8)"
-                        : "0 0 4px rgba(255,255,255,0.5)",
+                    cursor: hasEpisode ? "pointer" : "default",
+                    boxShadow: "none",
                     transition: "all 0.15s ease",
                   }}
                 />
@@ -516,96 +625,6 @@ export default function App() {
             })}
           </div>
         </div>
-
-        {/* Controls */}
-        <div
-          style={{
-            marginTop: "18px",
-            display: "flex",
-            justifyContent: "center",
-            gap: "10px",
-          }}
-        >
-          <button
-            onClick={togglePlay}
-            disabled={isPlaying}
-            style={{
-              padding: "12px 24px",
-              background: "linear-gradient(90deg, #444, #444)",
-              border: "none",
-              borderRadius: "8px",
-              color: isPlaying ? "#aaa" : "#000",
-              fontWeight: 700,
-              cursor: isPlaying ? "not-allowed" : "pointer",
-              opacity: isPlaying ? 0.6 : 1,
-              fontSize: "1em",
-              transition: "all 0.3s ease",
-            }}
-          >
-            {isPlaying ? "▶️ Playing..." : "▶️ Play"}
-          </button>
-
-          <button
-            onClick={reset}
-            style={{
-              padding: "12px 20px",
-              background: "#3b3939ff",
-              borderRadius: "8px",
-              color: "#ddd",
-              fontWeight: 600,
-              cursor: "pointer",
-              transition: "0.3s",
-            }}
-          >
-            🔁 Reset
-          </button>
-
-          <button
-            onClick={handleNextRound}
-            disabled={roundIndex >= TOTAL_ROUNDS - 1}
-            style={{
-              padding: "12px 20px",
-              background:
-                roundIndex >= TOTAL_ROUNDS - 1
-                  ? "#222"
-                  : "linear-gradient(90deg, #555, #777)",
-              borderRadius: "8px",
-              color: roundIndex >= TOTAL_ROUNDS - 1 ? "#666" : "#000",
-              fontWeight: 600,
-              cursor:
-                roundIndex >= TOTAL_ROUNDS - 1 ? "not-allowed" : "pointer",
-              transition: "0.3s",
-            }}
-          >
-            ➡ Next Round
-          </button>
-        </div>
-
-        {/* Export Button */}
-        {!locked && (
-          <div
-            style={{
-              marginTop: "18px",
-              display: "flex",
-              justifyContent: "center",
-            }}
-          >
-            <button
-              onClick={handleExport}
-              style={{
-                padding: "10px 24px",
-                background: "linear-gradient(90deg, #555, #888)",
-                border: "none",
-                borderRadius: "8px",
-                color: "#000",
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              📁 Export error_info.json
-            </button>
-          </div>
-        )}
       </div>
 
       {/* Right Panel */}
@@ -616,14 +635,34 @@ export default function App() {
           borderLeft: "2px solid #222",
           paddingLeft: "20px",
           textAlign: "center",
-          opacity: locked ? 0.4 : 1,
-          pointerEvents: locked ? "none" : "auto",
+          opacity: !hasEpisode || locked ? 0.4 : 1,
+          pointerEvents: !hasEpisode || locked ? "none" : "auto",
           transition: "opacity 0.3s ease",
           height: "100vh",
-          overflowY: "auto",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
         }}
       >
-        {locked ? (
+        {!hasEpisode ? (
+          <div
+            style={{
+              background: "#1c1c1c",
+              padding: "40px 20px",
+              borderRadius: "8px",
+              border: "1px solid #444",
+              color: "#ccc",
+              marginTop: "40px",
+              boxShadow: "inset 0 0 15px rgba(0,0,0,0.3)",
+            }}
+          >
+            <h3 style={{ color: "#ffd54f" }}>JSON 파일을 업로드해 주세요</h3>
+            <p>
+              Trajectory JSON을 업로드하면 여기에서 마커와 보정 구간을 편집할 수
+              있습니다.
+            </p>
+          </div>
+        ) : locked ? (
           <div
             style={{
               background: "#1c1c1c",
@@ -637,19 +676,23 @@ export default function App() {
           >
             <h3 style={{ color: "#ffd54f" }}>⚠️ Locked</h3>
             <p>
-              Wait until the <strong>1 Round of Play</strong> finishes to edit
-              intervals.
+              <strong>첫 전체 재생</strong>이 끝나면 오른쪽 패널에서 구간을 편집할 수
+              있습니다.
             </p>
           </div>
         ) : intervals.length === 0 ? (
-          <p style={{ color: "#888" }}>No markers yet.</p>
+          <p style={{ color: "#888", marginTop: "40px" }}>
+            아직 마커가 없습니다. 재생 중에 Space 키를 눌러 마커를 추가해 보세요.
+          </p>
         ) : (
           <div
             style={{
-              maxHeight: "70vh",
+              flex: 1,
               overflowY: "auto",
               textAlign: "left",
               paddingRight: "8px",
+              paddingBottom: "20px",
+              boxSizing: "border-box",
             }}
           >
             {intervals.map((intv, i) => {
@@ -668,9 +711,6 @@ export default function App() {
                 endFrame = tmp;
               }
 
-              const startTimeSec = startFrame * frameDuration;
-              const endTimeSec = endFrame * frameDuration;
-
               const widthPercent =
                 totalFrames > 0
                   ? ((endFrame - startFrame + 1) / totalFrames) * 100
@@ -687,33 +727,61 @@ export default function App() {
                   }}
                   style={{
                     border: isSelected
-                      ? "2px solid #ffd54f"
+                      ? "1px solid #e0c15a"
                       : "1px solid #333",
                     borderRadius: "10px",
                     padding: "12px",
                     marginBottom: "12px",
-                    background: isSelected ? "#332b00" : "#181818",
+                    background: isSelected ? "#242008" : "#181818",
                     cursor: "pointer",
-                    color: isSelected ? "#fff5c0" : "#ddd",
+                    color: isSelected ? "#fff3c0" : "#ddd",
                     transition: "all 0.2s ease",
-                    boxShadow: isSelected
-                      ? "0 0 10px rgba(255,213,79,0.3)"
-                      : "none",
+                    position: "relative",
                   }}
                 >
-                  <p style={{ margin: 0, fontWeight: 600 }}>
-                    #{i + 1}{" "}
-                    <span
-                      style={{
-                        background: "#333",
-                        padding: "3px 6px",
-                        borderRadius: "4px",
-                        fontSize: "0.85em",
+                  {/* 헤더 라인 + X 삭제 버튼 */}
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: "8px",
+                    }}
+                  >
+                    <p style={{ margin: 0, fontWeight: 600 }}>
+                      <span
+                        style={{
+                          background: "#333",
+                          padding: "3px 6px",
+                          borderRadius: "4px",
+                          fontSize: "0.85em",
+                        }}
+                      >
+                        Frame {baseFrame}
+                      </span>
+                    </p>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteInterval(i);
                       }}
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        color: "#777",
+                        cursor: "pointer",
+                        fontSize: "1rem",
+                        lineHeight: 1,
+                        padding: "2px 4px",
+                        outline: "none",
+                      }}
+                      title="Delete this interval"
                     >
-                      Base: frame {baseFrame} ({baseTimeLabel(baseFrame)})
-                    </span>
-                  </p>
+                      ×
+                    </button>
+                  </div>
+
+                  {/* Start / End 프레임 */}
                   <p
                     style={{
                       margin: "4px 0",
@@ -721,10 +789,10 @@ export default function App() {
                       color: "#aaa",
                     }}
                   >
-                    Start: {startTimeSec.toFixed(2)}s | End:{" "}
-                    {endTimeSec.toFixed(2)}s
+                    Start frame {startFrame} End frame {endFrame}
                   </p>
 
+                  {/* 간단 reason 요약 */}
                   {intv.reason && (
                     <p
                       style={{
@@ -740,6 +808,7 @@ export default function App() {
                     </p>
                   )}
 
+                  {/* 전체 타임라인 중 이 구간 위치 */}
                   <div
                     style={{
                       position: "relative",
@@ -760,251 +829,258 @@ export default function App() {
                       }}
                     />
                   </div>
+
+                  {/* 선택된 카드만 확장 영역 표시 */}
+                  {isSelected && selectedInterval && (
+                    <>
+                      {/* Replay window 영역 */}
+                      <div
+                        style={{
+                          marginTop: "14px",
+                          padding: "10px 12px",
+                          borderRadius: "10px",
+                          background: "#151515",
+                          border: "1px solid #333",
+                          color: "#eee",
+                          fontSize: "0.9em",
+                        }}
+                      >
+                        <p
+                          style={{
+                            margin: "0 0 6px 0",
+                            color: "#ccc",
+                            fontWeight: 500,
+                          }}
+                        >
+                          Replay Window
+                        </p>
+                        <p
+                          style={{
+                            margin: "0 0 10px 0",
+                            color: "#aaa",
+                          }}
+                        >
+                         
+                        </p>
+
+                        {/* Replay 버튼 */}
+                        <div
+                          style={{
+                            display: "flex",
+                            
+                            gap: "10px",
+                            marginBottom: "10px",
+                          }}
+                        >
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleReplayFromBase(selectedInterval);
+                            }}
+                            style={{
+                              ...pillStyle,
+                              padding: "6px 14px",
+                              border: "none",
+                              fontWeight: 600,
+                              fontSize: "0.85em",
+                              cursor: "pointer",
+                              outline: "none",
+                            }}
+                          >
+                            🔁 Replay
+                          </button>
+                        </div>
+
+                        {/* 오프셋 Range */}
+                        <Range
+                          values={[
+                            selectedInterval.startOffset,
+                            selectedInterval.endOffset,
+                          ]}
+                          step={1}
+                          min={MIN_OFFSET}
+                          max={MAX_OFFSET}
+                          onChange={(values) => {
+                            handleOffsetEdit("startOffset", values[0]);
+                            handleOffsetEdit("endOffset", values[1]);
+                          }}
+                          renderTrack={({ props, children }) => (
+                            <div
+                              {...props}
+                              style={{
+                                ...props.style,
+                                height: "16px",
+                                width: "100%",
+                                borderRadius: "8px",
+                                background: "#444",
+                                position: "relative",
+                              }}
+                            >
+                              {/* 선택된 구간 하이라이트 */}
+                              <div
+                                style={{
+                                  position: "absolute",
+                                  left: `${
+                                    ((selectedInterval.startOffset -
+                                      MIN_OFFSET) /
+                                      (MAX_OFFSET - MIN_OFFSET)) *
+                                    100
+                                  }%`,
+                                  width: `${
+                                    ((selectedInterval.endOffset -
+                                      selectedInterval.startOffset) /
+                                      (MAX_OFFSET - MIN_OFFSET)) *
+                                    100
+                                  }%`,
+                                  height: "100%",
+                                  background: "#ffd54f",
+                                  borderRadius: "8px",
+                                }}
+                              />
+                              {/* baseFrame(실시간 마킹 시점) 표시: offset 0 위치, 더 진하고 두꺼운 선 */}
+                              <div
+                                style={{
+                                  position: "absolute",
+                                  top: 0,
+                                  left: `${
+                                    ((0 - MIN_OFFSET) /
+                                      (MAX_OFFSET - MIN_OFFSET)) *
+                                    100
+                                  }%`,
+                                  width: "4px",
+                                  height: "100%",
+                                  background: "#000000b4",
+                                  transform: "translateX(-50%)",
+                                  borderRadius: "2px",
+                                  
+                                }}
+                              />
+                              {children}
+                            </div>
+                          )}
+                          renderThumb={({ props }) => (
+                            <div
+                              {...props}
+                              style={{
+                                ...props.style,
+                                height: "22px",
+                                width: "22px",
+                                borderRadius: "50%",
+                                background: "#ffffff",
+                                boxShadow: "0 0 4px rgba(0,0,0,0.5)",
+                              }}
+                            />
+                          )}
+                        />
+
+                        {/* 오프셋 숫자 입력 */}
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            marginTop: "10px",
+                            fontSize: "0.9em",
+                            color: "#ccc",
+                            gap: "12px",
+                          }}
+                        >
+                          <div style={{ flex: 1 }}>
+                            <div>Start offset frames</div>
+                            <input
+                              type="number"
+                              value={selectedInterval.startOffset}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                handleOffsetEdit(
+                                  "startOffset",
+                                  e.target.value
+                                );
+                              }}
+                              style={{
+                                width: "100%",
+                                maxWidth: "130px",
+                                padding: "6px 8px",
+                                marginTop: "6px",
+                                background: "#222",
+                                border: "1px solid #555",
+                                borderRadius: "6px",
+                                color: "#eee",
+                                fontSize: "0.95em",
+                              }}
+                            />
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div>End offset frames</div>
+                            <input
+                              type="number"
+                              value={selectedInterval.endOffset}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                handleOffsetEdit("endOffset", e.target.value);
+                              }}
+                              style={{
+                                width: "100%",
+                                maxWidth: "130px",
+                                padding: "6px 8px",
+                                marginTop: "6px",
+                                background: "#222",
+                                border: "1px solid #555",
+                                borderRadius: "6px",
+                                color: "#eee",
+                                fontSize: "0.95em",
+                              }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Calibration Note */}
+                      <div
+                        style={{
+                          marginTop: "10px",
+                          textAlign: "left",
+                          fontSize: "0.9em",
+                        }}
+                      >
+                        <div
+                          style={{ marginBottom: "4px", color: "#ccc" }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          Calibration note
+                        </div>
+                        <textarea
+                          value={selectedInterval.reason || ""}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            handleReasonChange(e.target.value);
+                          }}
+                          placeholder="이 구간을 다시 표시한 이유를 메모해 주세요 ex 파란 에이전트가 접시 대신 양파를 집음"
+
+                          rows={4}
+                          style={{
+                            width: "100%",
+                            resize: "vertical",
+                            minHeight: "120px",
+                            maxHeight: "220px",
+                            padding: "8px 10px",
+                            background: "#181818",
+                            border: "1px solid #555",
+                            borderRadius: "8px",
+                            color: "#eee",
+                            fontFamily: "inherit",
+                            fontSize: "0.9em",
+                            lineHeight: 1.5,
+                            boxSizing: "border-box",
+                          }}
+                        />
+                      </div>
+                    </>
+                  )}
                 </div>
               );
             })}
           </div>
         )}
-
-        {!locked && selectedInterval && (
-          <ReplayWindow
-            selectedInterval={selectedInterval}
-            handleOffsetEdit={handleOffsetEdit}
-            handleReplayFromBase={handleReplayFromBase}
-            deleteInterval={deleteInterval}
-            handleReasonChange={handleReasonChange}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ReplayWindow: 프레임 단위 조정 + reason 메모 */
-function ReplayWindow({
-  selectedInterval,
-  handleOffsetEdit,
-  handleReplayFromBase,
-  deleteInterval,
-  handleReasonChange,
-}) {
-  const baseFrame = selectedInterval.baseFrame;
-  const baseTimeSec = baseFrame * FRAME_DURATION;
-
-  const startFrame = baseFrame + selectedInterval.startOffset;
-  const endFrame = baseFrame + selectedInterval.endOffset;
-
-  const startTimeSec = startFrame * FRAME_DURATION;
-  const endTimeSec = endFrame * FRAME_DURATION;
-
-  return (
-    <div
-      style={{
-        marginTop: "25px",
-        borderTop: "1px solid #333",
-        paddingTop: "20px",
-        color: "#eee",
-      }}
-    >
-      <h3 style={{ color: "#ffffff", marginBottom: "10px", fontSize: "1.1em" }}>
-        🎯 Replay Window
-      </h3>
-      <p style={{ color: "#aaa", marginBottom: "6px", fontSize: "0.95em" }}>
-        Focus on <strong>frame {baseFrame}</strong> ({baseTimeSec.toFixed(2)}s)
-      </p>
-      <p style={{ color: "#aaa", marginBottom: "14px", fontSize: "0.9em" }}>
-        Start frame {startFrame} ({startTimeSec.toFixed(2)}s), End frame{" "}
-        {endFrame} ({endTimeSec.toFixed(2)}s)
-      </p>
-
-      {/* === Replay / Delete 버튼 (위로 이동) === */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "center",
-          gap: "12px",
-          marginBottom: "20px",
-        }}
-      >
-        <button
-          onClick={() => handleReplayFromBase(selectedInterval)}
-          style={{
-            padding: "10px 22px",
-            background: "linear-gradient(90deg, #292828ff)",
-            border: "none",
-            borderRadius: "8px",
-            color: "#fff",
-            fontWeight: 700,
-            cursor: "pointer",
-          }}
-        >
-          🔁 Replay
-        </button>
-        <button
-          onClick={() => deleteInterval(selectedInterval.index)}
-          style={{
-            padding: "10px 22px",
-            background: "linear-gradient(90deg, #292828ff)",
-            border: "none",
-            borderRadius: "8px",
-            color: "#c6c1c1ff",
-            fontWeight: 700,
-            cursor: "pointer",
-          }}
-        >
-          🗑 Delete
-        </button>
-      </div>
-
-      {/* === 오프셋 조절 UI === */}
-      <div
-        style={{
-          padding: "12px 14px",
-          borderRadius: "10px",
-          background: "#151515",
-          border: "1px solid #333",
-        }}
-      >
-        <Range
-          values={[selectedInterval.startOffset, selectedInterval.endOffset]}
-          step={1}
-          min={MIN_OFFSET}
-          max={MAX_OFFSET}
-          onChange={(values) => {
-            handleOffsetEdit("startOffset", values[0]);
-            handleOffsetEdit("endOffset", values[1]);
-          }}
-          renderTrack={({ props, children }) => (
-            <div
-              {...props}
-              style={{
-                ...props.style,
-                height: "16px",
-                width: "100%",
-                borderRadius: "8px",
-                background: "#444",
-                position: "relative",
-              }}
-            >
-              <div
-                style={{
-                  position: "absolute",
-                  left: `${
-                    ((selectedInterval.startOffset - MIN_OFFSET) /
-                      (MAX_OFFSET - MIN_OFFSET)) *
-                    100
-                  }%`,
-                  width: `${
-                    ((selectedInterval.endOffset -
-                      selectedInterval.startOffset) /
-                      (MAX_OFFSET - MIN_OFFSET)) *
-                    100
-                  }%`,
-                  height: "100%",
-                  background: "linear-gradient(90deg, #ffd54f, #ffd54f)",
-                  borderRadius: "8px",
-                }}
-              />
-              {children}
-            </div>
-          )}
-          renderThumb={({ props }) => (
-            <div
-              {...props}
-              style={{
-                ...props.style,
-                height: "22px",
-                width: "22px",
-                borderRadius: "50%",
-                background: "#ffffff",
-                boxShadow: "0 0 4px rgba(0,0,0,0.5)",
-              }}
-            />
-          )}
-        />
-
-        {/* 오프셋 숫자 입력 */}
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            marginTop: "12px",
-            fontSize: "0.9em",
-            color: "#ccc",
-            gap: "16px",
-          }}
-        >
-          <div style={{ flex: 1 }}>
-            <div>Start offset frames</div>
-            <input
-              type="number"
-              value={selectedInterval.startOffset}
-              onChange={(e) => handleOffsetEdit("startOffset", e.target.value)}
-              style={{
-                width: "100%",
-                maxWidth: "130px",
-                padding: "6px 8px",
-                marginTop: "6px",
-                background: "#222",
-                border: "1px solid #555",
-                borderRadius: "6px",
-                color: "#eee",
-                fontSize: "0.95em",
-              }}
-            />
-          </div>
-          <div style={{ flex: 1 }}>
-            <div>End offset frames</div>
-            <input
-              type="number"
-              value={selectedInterval.endOffset}
-              onChange={(e) => handleOffsetEdit("endOffset", e.target.value)}
-              style={{
-                width: "100%",
-                maxWidth: "130px",
-                padding: "6px 8px",
-                marginTop: "6px",
-                background: "#222",
-                border: "1px solid #555",
-                borderRadius: "6px",
-                color: "#eee",
-                fontSize: "0.95em",
-              }}
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* === Calibration Note === */}
-      <div
-        style={{
-          marginTop: "18px",
-          textAlign: "left",
-          fontSize: "0.95em",
-        }}
-      >
-        <div style={{ marginBottom: "6px", color: "#ccc" }}>
-          Calibration note
-        </div>
-        <textarea
-          value={selectedInterval.reason || ""}
-          onChange={(e) => handleReasonChange(e.target.value)}
-          placeholder="이 구간으로 다시 잡은 이유를 메모해 주세요."
-          rows={4}
-          style={{
-            width: "100%",
-            resize: "vertical",
-            minHeight: "390px",
-            padding: "10px 12px",
-            background: "#181818",
-            border: "1px solid #555",
-            borderRadius: "8px",
-            color: "#eee",
-            fontFamily: "inherit",
-            fontSize: "0.95em",
-            lineHeight: 1.5,
-          }}
-        />
       </div>
     </div>
   );
