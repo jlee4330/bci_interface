@@ -133,6 +133,98 @@ export default function OvercookScene({ staticInfo, frame, frames, isReplaying }
     prevLogicFrameRef.current = frame;
   }, [frame, grid, width, height, isReplaying]);
 
+  // 리플레이용 fake object 재계산
+  const replayFakeObjects = useMemo(() => {
+    if (!isReplaying || !frames || !Array.isArray(frames) || !frame) return [];
+
+    const currentTimestep = frame.timestep ?? 0;
+    let currentFake = [];
+
+    for (let i = 0; i < frames.length; i++) {
+      const f = frames[i];
+      const t = f.timestep ?? 0;
+
+      // 현재 프레임 이후는 볼 필요 없음
+      if (t > currentTimestep) break;
+
+      // 에피소드 리셋 지점
+      if (t === 0) {
+        currentFake = [];
+      }
+
+      const prevFrame = i > 0 ? frames[i - 1] : null;
+      if (!prevFrame) continue;
+
+      f.players.forEach((player, idx) => {
+        const prevPlayer = prevFrame.players?.[idx];
+        if (!prevPlayer) return;
+
+        const prevHeld = prevPlayer.heldObject;
+        const curHeld = player.heldObject;
+
+        // 1 내려놓기
+        if (prevHeld && !curHeld) {
+          const name = prevHeld.name;
+          if (name === "onion" || name === "soup") {
+            const ori = prevPlayer.orientation || "south";
+            const { dx, dy } = dirOffset[ori] || { dx: 0, dy: 0 };
+
+            const tx = prevPlayer.position.x + dx;
+            const ty = prevPlayer.position.y + dy;
+
+            if (tx >= 0 && tx < width && ty >= 0 && ty < height) {
+              const cell = grid[ty][tx];
+
+              if (cell !== "P" && cell !== "S") {
+                currentFake.push({
+                  id: `replay-fake-${t}-${idx}-${name}`,
+                  name,
+                  position: { x: tx, y: ty },
+                });
+              }
+            }
+          }
+        }
+
+        // 2 집기
+        if (!prevHeld && curHeld) {
+          const name = curHeld.name;
+          if (name === "onion" || name === "soup") {
+            const ori = prevPlayer.orientation || player.orientation || "south";
+            const { dx, dy } = dirOffset[ori] || { dx: 0, dy: 0 };
+
+            const tx = prevPlayer.position.x + dx;
+            const ty = prevPlayer.position.y + dy;
+
+            const idxFake = currentFake.findIndex(
+              (fo) =>
+                fo.name === name &&
+                fo.position.x === tx &&
+                fo.position.y === ty
+            );
+            if (idxFake !== -1) {
+              currentFake.splice(idxFake, 1);
+            }
+          }
+        }
+      });
+
+      // 3 실제 object가 생긴 위치의 fake object 제거
+      const realObjects = f.objects || [];
+      currentFake = currentFake.filter(
+        (fo) =>
+          !realObjects.some(
+            (ro) =>
+              ro.name === fo.name &&
+              ro.position.x === fo.position.x &&
+              ro.position.y === fo.position.y
+          )
+      );
+    }
+
+    return currentFake;
+  }, [isReplaying, frames, frame, grid, width, height]);
+
   // 포지션 보간 애니메이션
   useEffect(() => {
     const start = performance.now();
@@ -161,14 +253,11 @@ export default function OvercookScene({ staticInfo, frame, frames, isReplaying }
     const cookTimeDefault = staticInfo.cookTime ?? 20;
     const currentTimestep = frame.timestep ?? 0;
 
-    // key: "x y" → { startedAt }
     const state = {};
-    // key: "x y" → remainingTime (현재 프레임 기준)
     const remainingByKey = {};
 
     for (const f of frames) {
       const t = f.timestep ?? 0;
-      // 현재 프레임 이후는 볼 필요 없음
       if (t > currentTimestep) continue;
 
       const objs = f.objects || [];
@@ -181,7 +270,6 @@ export default function OvercookScene({ staticInfo, frame, frames, isReplaying }
           obj.numIngredients === undefined &&
           !Array.isArray(obj.ingredients);
 
-        // 예전 포맷 fake soup 는 타이머 계산 안 함
         if (isFakeSoup) {
           return;
         }
@@ -197,7 +285,6 @@ export default function OvercookScene({ staticInfo, frame, frames, isReplaying }
 
         if (logicalCooking) {
           if (!state[key]) {
-            // 이 위치에서 soup가 끓기 시작한 최초 timestep
             state[key] = { startedAt: t };
           }
           const elapsed = t - state[key].startedAt;
@@ -206,10 +293,8 @@ export default function OvercookScene({ staticInfo, frame, frames, isReplaying }
 
           remainingByKey[key] = left;
         } else {
-          // 더 이상 끓는 상태가 아니면 startedAt 리셋
           delete state[key];
 
-          // ready 상태면 남은 시간 0으로 고정해도 됨
           if (logicalReady) {
             remainingByKey[key] = 0;
           }
@@ -342,7 +427,6 @@ export default function OvercookScene({ staticInfo, frame, frames, isReplaying }
         !Array.isArray(obj.ingredients);
 
       if (isFakeSoup) {
-        // 옛 포맷 호환: 그냥 수프 스프라이트만
         sprite = "/assets/tiles/tile_soup.png";
       } else {
         const count = obj.numIngredients ?? obj.ingredients?.length ?? 0;
@@ -351,7 +435,6 @@ export default function OvercookScene({ staticInfo, frame, frames, isReplaying }
         const totalCookTime = obj.cookTime ?? staticInfo.cookTime ?? 20;
         cookTotalForBar = totalCookTime;
 
-        // UI 기준 상태
         const logicalCooking = !obj.isReady && onionCount >= 3;
         const logicalReady = obj.isReady && onionCount >= 3;
 
@@ -385,7 +468,6 @@ export default function OvercookScene({ staticInfo, frame, frames, isReplaying }
           opacity={ready ? 1 : 0.85}
         />
 
-        {/* 리플레이에서도 원래 프레임 기준 남은 시간 그대로 보여줌 */}
         {cooking && remainingTime !== null && (
           <>
             <rect
@@ -470,9 +552,9 @@ export default function OvercookScene({ staticInfo, frame, frames, isReplaying }
     );
   };
 
-  // 리플레이일 때는 fake object를 아예 렌더하지 않음 (기존 로직 유지)
+  // 리플레이일 때도 재계산된 fake object 포함
   const combinedObjects = isReplaying
-    ? frame.objects
+    ? [...frame.objects, ...replayFakeObjects]
     : [...frame.objects, ...fakeObjectsRef.current];
 
   return (
